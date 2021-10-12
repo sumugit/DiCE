@@ -12,6 +12,7 @@ import copy
 
 import diverse_counterfactuals as exp
 from counterfactual_explanations import CounterfactualExplanations
+from constants import ModelTypes
 
 
 class DiceTensorFlow2(ExplainerBase):
@@ -38,6 +39,7 @@ class DiceTensorFlow2(ExplainerBase):
                              "If your problem supports this, please initialize model class again "
                              "with no custom transformation function.")
         # number of output nodes of ML model
+        #if self.model.model_type == ModelTypes.Classifier:
         self.num_output_nodes = self.model.get_num_output_nodes(len(self.data_interface.ohe_encoded_feature_names)).shape[1]
 
         # variables required to generate CFs - see generate_counterfactuals() for more info
@@ -50,7 +52,7 @@ class DiceTensorFlow2(ExplainerBase):
         self.optimizer_weights = []  # optimizer, learning_rate
 
     # CF生成に関する事をまとめて実行する関数
-    def generate_counterfactuals(self, query_instance, total_CFs, desired_class="opposite", proximity_weight=0.5,
+    def generate_counterfactuals(self, query_instance, total_CFs, desired_range=None, desired_class="opposite", proximity_weight=0.5,
                                  diversity_weight=1.0, categorical_penalty=0.1, algorithm="DiverseCF",
                                  features_to_vary="all", permitted_range=None, yloss_type="hinge_loss",
                                  diversity_loss_type="dpp_style:inverse_dist", feature_weights="inverse_mad",
@@ -62,6 +64,7 @@ class DiceTensorFlow2(ExplainerBase):
 
         :param query_instance: Test point of interest. A dictionary of feature names and values or a single row dataframe
         :param total_CFs: Total number of counterfactuals required.
+        :param desired_range: For regression problems. Contains the outcome range to generate counterfactuals in.
         :param desired_class: Desired counterfactual class - can take 0 or 1. Default value is "opposite" to the
                               outcome class of query_instance for binary classification.
         :param proximity_weight: A positive float. Larger this weight, more close the counterfactuals are to
@@ -134,7 +137,7 @@ class DiceTensorFlow2(ExplainerBase):
 
         # CFの探索
         final_cfs_df, test_instance_df, final_cfs_df_sparse = \
-            self.find_counterfactuals(query_instance, desired_class, optimizer,
+            self.find_counterfactuals(query_instance, desired_range, desired_class, optimizer,
                                       learning_rate, min_iter, max_iter, project_iter,
                                       loss_diff_thres, loss_converge_maxiter, verbose,
                                       init_near_query_instance, tie_random, stopping_threshold,
@@ -147,6 +150,7 @@ class DiceTensorFlow2(ExplainerBase):
             test_instance_df=test_instance_df,
             final_cfs_df_sparse=final_cfs_df_sparse,
             posthoc_sparsity_param=posthoc_sparsity_param,
+            desired_range=desired_range,
             desired_class=desired_class)
 
         # 重要度スコア用に返す
@@ -246,31 +250,40 @@ class DiceTensorFlow2(ExplainerBase):
         elif opt_method == "rmsprop":
             self.optimizer = tf.compat.v1.train.RMSPropOptimizer(learning_rate=learning_rate)
 
-    def compute_yloss(self):
+    def compute_yloss(self, desired_range, desired_class):
         """ylossの定義"""
         """Computes the first part (y-loss) of the loss function."""
         yloss = 0.0
-        for i in range(self.total_CFs):
-            if self.yloss_type == "l2_loss":
-                temp_loss = tf.pow((self.model.get_output(self.cfs[i]) - self.target_cf_class), 2)
-                temp_loss = temp_loss[:, (self.num_output_nodes-1):][0][0]
-            elif self.yloss_type == "log_loss":
-                temp_logits = tf.compat.v1.log((tf.abs(
-                    self.model.get_output(
-                        self.cfs[i]) - 0.000001))/(1 - tf.abs(self.model.get_output(self.cfs[i]) - 0.000001)))
-                temp_logits = temp_logits[:, (self.num_output_nodes-1):]
-                temp_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-                    logits=temp_logits, labels=self.target_cf_class)[0][0]
-            elif self.yloss_type == "hinge_loss":
-                # 0.000001はおそらく0除算の防止
-                temp_logits = tf.compat.v1.log((tf.abs(
-                    self.model.get_output(
-                        self.cfs[i]) - 0.000001))/(1 - tf.abs(self.model.get_output(self.cfs[i]) - 0.000001)))
-                temp_logits = temp_logits[:, (self.num_output_nodes-1):]
-                temp_loss = tf.compat.v1.losses.hinge_loss(
-                    logits=temp_logits, labels=self.target_cf_class)
-
-            yloss += temp_loss
+        # 分類問題の時
+        if self.model.model_type == ModelTypes.Classifier: # --added.
+            for i in range(self.total_CFs):
+                if self.yloss_type == "l2_loss":
+                    temp_loss = tf.pow((self.model.get_output(self.cfs[i]) - self.target_cf_class), 2)
+                    temp_loss = temp_loss[:, (self.num_output_nodes-1):][0][0]
+                elif self.yloss_type == "log_loss":
+                    temp_logits = tf.compat.v1.log((tf.abs(
+                        self.model.get_output(
+                            self.cfs[i]) - 0.000001))/(1 - tf.abs(self.model.get_output(self.cfs[i]) - 0.000001)))
+                    temp_logits = temp_logits[:, (self.num_output_nodes-1):]
+                    temp_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+                        logits=temp_logits, labels=self.target_cf_class)[0][0]
+                elif self.yloss_type == "hinge_loss":
+                    # 0.000001はおそらく0除算の防止
+                    temp_logits = tf.compat.v1.log((tf.abs(
+                        self.model.get_output(
+                            self.cfs[i]) - 0.000001))/(1 - tf.abs(self.model.get_output(self.cfs[i]) - 0.000001)))
+                    temp_logits = temp_logits[:, (self.num_output_nodes-1):]
+                    temp_loss = tf.compat.v1.losses.hinge_loss(
+                        logits=temp_logits, labels=self.target_cf_class)
+                yloss += temp_loss
+        # 回帰問題
+        elif self.model.model_type == ModelTypes.Regressor:
+            for i in range(self.total_CFs):
+                if self.yloss_type == "hinge_loss":
+                    if not desired_range[0] <= self.model.get_output(self.cfs[i]) <= desired_range[1]:
+                        temp_yloss = max(abs(self.model.get_output(self.cfs[i]) - desired_range[0]),
+                                       abs(self.model.get_output(self.cfs[i]) - desired_range[1]))
+                yloss += temp_loss            
 
         return yloss/self.total_CFs
 
@@ -356,10 +369,10 @@ class DiceTensorFlow2(ExplainerBase):
 
         return regularization_loss
 
-    def compute_loss(self):
+    def compute_loss(self, desired_range, desired_class):
         """全体の最適化問題"""
         """Computes the overall loss"""
-        self.yloss = self.compute_yloss()
+        self.yloss = self.compute_yloss(desired_range, desired_class)
         self.proximity_loss = self.compute_proximity_loss() if self.proximity_weight > 0 else 0.0
         self.diversity_loss = self.compute_diversity_loss() if self.diversity_weight > 0 else 0.0
         self.regularization_loss = self.compute_regularization_loss()
@@ -480,7 +493,7 @@ class DiceTensorFlow2(ExplainerBase):
             self.loss_converge_iter = 0
             return False
 
-    def find_counterfactuals(self, query_instance, desired_class, optimizer, learning_rate, min_iter,
+    def find_counterfactuals(self, query_instance, desired_range, desired_class, optimizer, learning_rate, min_iter,
                              max_iter, project_iter, loss_diff_thres, loss_converge_maxiter, verbose,
                              init_near_query_instance, tie_random, stopping_threshold, posthoc_sparsity_param,
                              posthoc_sparsity_algorithm):
@@ -497,10 +510,15 @@ class DiceTensorFlow2(ExplainerBase):
 
         # find the predicted value of query_instance
         test_pred = self.predict_fn(tf.constant(query_instance, dtype=tf.float32))[0][0]
+        # 期待出力域の設定 -- added.
+        if desired_range is not None:
+            if desired_range[0] > desired_range[1]:
+                raise ValueError("Invalid Range!")
         # 期待クラスの設定
-        if desired_class == "opposite":
-            desired_class = 1.0 - round(test_pred)
-        self.target_cf_class = np.array([[desired_class]], dtype=np.float32)
+        print(self.model.model_type)
+        if desired_class == "opposite" and self.model.model_type == ModelTypes.Classifier: #--added.
+            desired_class = 1.0 - round(test_pred) # roundで確率を0,1に変換
+            self.target_cf_class = np.array([[desired_class]], dtype=np.float32)
 
         # 必要なオプションの設定
         self.min_iter = min_iter
@@ -558,7 +576,7 @@ class DiceTensorFlow2(ExplainerBase):
                 # tf.GradientTapeクラスをインスタンス化することで傾き (勾配) を求められる
                 with tf.GradientTape() as tape:
                     # 全体の損失を計算
-                    loss_value = self.compute_loss()
+                    loss_value = self.compute_loss(desired_range, desired_class)
 
                 # get gradients
                 # 各特徴量の傾き (勾配) の取得

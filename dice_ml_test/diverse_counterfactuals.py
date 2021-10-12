@@ -72,7 +72,7 @@ class CounterfactualExamples:
     def visualize_as_dataframe(self, display_sparse_df=True, show_only_changes=False):
         from IPython.display import display
         # original instance
-        print('Query instance (original outcome うんこ: %i)' % round(self.test_pred))
+        print('Query instance (original outcome: %i)' % round(self.test_pred))
         display(self.test_instance_df)  # works only in Jupyter notebook
         if self.final_cfs_df is not None and len(self.final_cfs_df) > 0:
             if self.posthoc_sparsity_param is None:

@@ -1,3 +1,4 @@
+"""引数で指定する各ラベル"""
 """Constants for dice-ml package."""
 
 

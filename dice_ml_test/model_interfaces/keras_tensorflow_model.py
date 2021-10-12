@@ -1,4 +1,4 @@
-"""tensorflowモデルを呼び出した時に実行させる (2.系のみ実行可能)"""
+""" tensorflowモデルを呼び出した時に実行させる (2.系のみ実行可能) """
 """Module containing an interface to trained Keras Tensorflow model."""
 
 from dice_ml.model_interfaces.base_model import BaseModel
@@ -48,3 +48,8 @@ class KerasTensorFlowModel(BaseModel):
     def get_num_output_nodes(self, inp_size):
         temp_input = tf.convert_to_tensor([tf.random.uniform([inp_size])], dtype=tf.float32)
         return self.get_output(temp_input)
+
+    def get_num_output_nodes2(self, input): #--added.
+        if self.model_type == ModelTypes.Regressor:
+            raise SystemException('Number of output nodes not supported for regression')
+        return self.get_output(input).shape[1]
