@@ -280,8 +280,10 @@ class DiceTensorFlow2(ExplainerBase):
         elif self.model.model_type == ModelTypes.Regressor:
             for i in range(self.total_CFs):
                 if self.yloss_type == "hinge_loss":
+                    temp_loss = 0.0
+                    # 期待出力域に収まっていなければ罰則
                     if not desired_range[0] <= self.model.get_output(self.cfs[i]) <= desired_range[1]:
-                        temp_yloss = max(abs(self.model.get_output(self.cfs[i]) - desired_range[0]),
+                        temp_loss = max(abs(self.model.get_output(self.cfs[i]) - desired_range[0]),
                                        abs(self.model.get_output(self.cfs[i]) - desired_range[1]))
                 yloss += temp_loss            
 
@@ -478,16 +480,26 @@ class DiceTensorFlow2(ExplainerBase):
                 # MLモデルで予測
                 test_preds = [self.predict_fn(tf.constant(cf, dtype=tf.float32))[0] for cf in temp_cfs]
                 
-                # 全ての予測値が期待クラスに属していたら終了
-                if self.target_cf_class == 0 and all(i <= self.stopping_threshold for i in test_preds):
-                    self.converged = True
-                    return True
-                elif self.target_cf_class == 1 and all(i >= self.stopping_threshold for i in test_preds):
-                    self.converged = True
-                    return True
-                # 一つでも期待クラスに属していないCFがあれば失敗
-                else:
-                    return False
+                # 分類問題の時
+                if self.model.model_type == ModelTypes.Classifier: # --added.
+                    # 全ての予測値が期待クラス (確率の閾値stopping_threshold) に属していたら終了
+                    if self.target_cf_class == 0 and all(i <= self.stopping_threshold for i in test_preds):
+                        self.converged = True
+                        return True
+                    elif self.target_cf_class == 1 and all(i >= self.stopping_threshold for i in test_preds):
+                        self.converged = True
+                        return True
+                    # 一つでも期待クラスに属していないCFがあれば失敗
+                    else:
+                        return False
+                # 回帰問題の時
+                elif self.model.model_type == ModelTypes.Regressor:
+                    if all(self.target_cf_range[0] <= i <= self.target_cf_range[1] for i in test_preds):
+                        self.converged = True
+                        return True
+                    else:
+                        return False
+                    
         # lossが改悪されたらiterを0に戻す
         else:
             self.loss_converge_iter = 0
@@ -514,6 +526,7 @@ class DiceTensorFlow2(ExplainerBase):
         if desired_range is not None:
             if desired_range[0] > desired_range[1]:
                 raise ValueError("Invalid Range!")
+            self.target_cf_range = desired_range
         # 期待クラスの設定
         print(self.model.model_type)
         if desired_class == "opposite" and self.model.model_type == ModelTypes.Classifier: #--added.
@@ -531,10 +544,12 @@ class DiceTensorFlow2(ExplainerBase):
         self.converged = False
 
         self.stopping_threshold = stopping_threshold
-        if self.target_cf_class == 0 and self.stopping_threshold > 0.5:
-            self.stopping_threshold = 0.25
-        elif self.target_cf_class == 1 and self.stopping_threshold < 0.5:
-            self.stopping_threshold = 0.75
+        # 分類問題の時
+        if self.model.model_type == ModelTypes.Classifier: # --added.
+            if self.target_cf_class == 0 and self.stopping_threshold > 0.5:
+                self.stopping_threshold = 0.25
+            elif self.target_cf_class == 1 and self.stopping_threshold < 0.5:
+                self.stopping_threshold = 0.75
 
         # to resolve tie - if multiple levels of an one-hot-encoded categorical variable take value 1
         self.tie_random = tie_random
@@ -617,14 +632,25 @@ class DiceTensorFlow2(ExplainerBase):
                 test_preds_stored = [self.predict_fn(tf.constant(cf, dtype=tf.float32)) for cf in temp_cfs_stored]
 
                 # 全てのCFの予測値が閾値を超えていたら最適なCFの組み合わせと閾値を更新
-                if((self.target_cf_class == 0 and all(i <= self.stopping_threshold for i in test_preds_stored)) or
-                   (self.target_cf_class == 1 and all(i >= self.stopping_threshold for i in test_preds_stored))):
-                    avg_preds_dist = np.mean([abs(pred[0][0]-self.stopping_threshold) for pred in test_preds_stored])
-                    if avg_preds_dist < self.min_dist_from_threshold[loop_ix]:
-                        self.min_dist_from_threshold[loop_ix] = avg_preds_dist
-                        for ix in range(self.total_CFs):
-                            self.best_backup_cfs[loop_ix+ix] = copy.deepcopy(temp_cfs_stored[ix])
-                            self.best_backup_cfs_preds[loop_ix+ix] = copy.deepcopy(test_preds_stored[ix])
+                # 分類問題の時
+                if self.model.model_type == ModelTypes.Classifier: # --added.
+                    if((self.target_cf_class == 0 and all(i <= self.stopping_threshold for i in test_preds_stored)) or
+                    (self.target_cf_class == 1 and all(i >= self.stopping_threshold for i in test_preds_stored))):
+                        avg_preds_dist = np.mean([abs(pred[0][0]-self.stopping_threshold) for pred in test_preds_stored])
+                        if avg_preds_dist < self.min_dist_from_threshold[loop_ix]:
+                            self.min_dist_from_threshold[loop_ix] = avg_preds_dist
+                            for ix in range(self.total_CFs):
+                                self.best_backup_cfs[loop_ix+ix] = copy.deepcopy(temp_cfs_stored[ix])
+                                self.best_backup_cfs_preds[loop_ix+ix] = copy.deepcopy(test_preds_stored[ix])
+                # 回帰問題の時
+                elif self.model.model_type == ModelTypes.Regressor: #--added.
+                    if all(self.target_cf_range[0] <= i <= self.target_cf_range[1] for i in test_preds_stored):
+                        avg_preds_dist = np.mean(test_preds_stored)
+                        if avg_preds_dist < self.min_dist_from_threshold[loop_ix]:
+                            self.min_dist_from_threshold[loop_ix] = avg_preds_dist
+                            for ix in range(self.total_CFs):
+                                self.best_backup_cfs[loop_ix+ix] = copy.deepcopy(temp_cfs_stored[ix])
+                                self.best_backup_cfs_preds[loop_ix+ix] = copy.deepcopy(test_preds_stored[ix])
 
             ### 勾配計算終了 ###
             # rounding off final cfs - not necessary when inter_project=True
@@ -648,13 +674,23 @@ class DiceTensorFlow2(ExplainerBase):
 
         # update final_cfs from backed up CFs if valid CFs are not found
         # いくつかのCFの予測値が閾値を超えていなかったら今までの中で最適なCFの組み合わせを得る
-        if((self.target_cf_class == 0 and any(i[0] > self.stopping_threshold for i in self.cfs_preds)) or
-           (self.target_cf_class == 1 and any(i[0] < self.stopping_threshold for i in self.cfs_preds))):
-            for loop_ix in range(loop_find_CFs):
-                if self.min_dist_from_threshold[loop_ix] != 100:
-                    for ix in range(self.total_CFs):
-                        self.final_cfs[loop_ix+ix] = copy.deepcopy(self.best_backup_cfs[loop_ix+ix])
-                        self.cfs_preds[loop_ix+ix] = copy.deepcopy(self.best_backup_cfs_preds[loop_ix+ix])
+        # 分類問題の時
+        if self.model.model_type == ModelTypes.Classifier: # --added.
+            if((self.target_cf_class == 0 and any(i[0] > self.stopping_threshold for i in self.cfs_preds)) or
+            (self.target_cf_class == 1 and any(i[0] < self.stopping_threshold for i in self.cfs_preds))):
+                for loop_ix in range(loop_find_CFs):
+                    if self.min_dist_from_threshold[loop_ix] != 100:
+                        for ix in range(self.total_CFs):
+                            self.final_cfs[loop_ix+ix] = copy.deepcopy(self.best_backup_cfs[loop_ix+ix])
+                            self.cfs_preds[loop_ix+ix] = copy.deepcopy(self.best_backup_cfs_preds[loop_ix+ix])
+        # 回帰問題の時
+        elif self.model.model_type == ModelTypes.Regressor: # --added.
+            if not all(self.target_cf_range[0] <= i <= self.target_cf_range[1] for i in self.cfs_preds):
+                for loop_ix in range(loop_find_CFs):
+                    if self.min_dist_from_threshold[loop_ix] != 100:
+                        for ix in range(self.total_CFs):
+                            self.final_cfs[loop_ix+ix] = copy.deepcopy(self.best_backup_cfs[loop_ix+ix])
+                            self.cfs_preds[loop_ix+ix] = copy.deepcopy(self.best_backup_cfs_preds[loop_ix+ix])       
 
         # do inverse transform of CFs to original user-fed format
         cfs = np.array([self.final_cfs[i][0] for i in range(len(self.final_cfs))])
@@ -687,31 +723,58 @@ class DiceTensorFlow2(ExplainerBase):
         #     self.cfs_preds_sparse = None
 
         # 可視化に必要な処理
-        m, s = divmod(self.elapsed, 60)
-        if((self.target_cf_class == 0 and all(i <= self.stopping_threshold for i in self.cfs_preds)) or
-           (self.target_cf_class == 1 and all(i >= self.stopping_threshold for i in self.cfs_preds))):
-            self.total_CFs_found = max(loop_find_CFs, self.total_CFs)
-            valid_ix = [ix for ix in range(max(loop_find_CFs, self.total_CFs))]  # indexes of valid CFs
-            print('Diverse Counterfactuals found! total time taken: %02d' %
-                  m, 'min %02d' % s, 'sec')
-        else:
-            self.total_CFs_found = 0
-            valid_ix = []  # indexes of valid CFs
-            for cf_ix, pred in enumerate(self.cfs_preds):
-                if((self.target_cf_class == 0 and pred < self.stopping_threshold) or
-                   (self.target_cf_class == 1 and pred > self.stopping_threshold)):
-                    self.total_CFs_found += 1
-                    valid_ix.append(cf_ix)
-
-            if self.total_CFs_found == 0:
-                print('No Counterfactuals found for the given configuation, perhaps try with different ',
-                      'values of proximity (or diversity) weights or learning rate...',
-                      '; total time taken: %02d' % m, 'min %02d' % s, 'sec')
+        # 分類問題の時
+        if self.model.model_type == ModelTypes.Classifier: # --added.
+            m, s = divmod(self.elapsed, 60)
+            if((self.target_cf_class == 0 and all(i <= self.stopping_threshold for i in self.cfs_preds)) or
+            (self.target_cf_class == 1 and all(i >= self.stopping_threshold for i in self.cfs_preds))):
+                self.total_CFs_found = max(loop_find_CFs, self.total_CFs)
+                valid_ix = [ix for ix in range(max(loop_find_CFs, self.total_CFs))]  # indexes of valid CFs
+                print('Diverse Counterfactuals found! total time taken: %02d' %
+                    m, 'min %02d' % s, 'sec')
             else:
-                print('Only %d (required %d)' % (self.total_CFs_found, max(loop_find_CFs, self.total_CFs)),
-                      ' Diverse Counterfactuals found for the given configuation, perhaps try with different',
-                      'values of proximity (or diversity) weights or learning rate...',
-                      '; total time taken: %02d' % m, 'min %02d' % s, 'sec')
+                self.total_CFs_found = 0
+                valid_ix = []  # indexes of valid CFs
+                for cf_ix, pred in enumerate(self.cfs_preds):
+                    if((self.target_cf_class == 0 and pred < self.stopping_threshold) or
+                    (self.target_cf_class == 1 and pred > self.stopping_threshold)):
+                        self.total_CFs_found += 1
+                        valid_ix.append(cf_ix)
+
+                if self.total_CFs_found == 0:
+                    print('No Counterfactuals found for the given configuation, perhaps try with different ',
+                        'values of proximity (or diversity) weights or learning rate...',
+                        '; total time taken: %02d' % m, 'min %02d' % s, 'sec')
+                else:
+                    print('Only %d (required %d)' % (self.total_CFs_found, max(loop_find_CFs, self.total_CFs)),
+                        ' Diverse Counterfactuals found for the given configuation, perhaps try with different',
+                        'values of proximity (or diversity) weights or learning rate...',
+                        '; total time taken: %02d' % m, 'min %02d' % s, 'sec')
+        # 回帰問題の時
+        elif self.model.model_type == ModelTypes.Regressor: # --added.
+            m, s = divmod(self.elapsed, 60)
+            if all(self.target_cf_range[0] <= i <= self.target_cf_range[1] for i in self.cfs_preds):
+                self.total_CFs_found = max(loop_find_CFs, self.total_CFs)
+                valid_ix = [ix for ix in range(max(loop_find_CFs, self.total_CFs))]  # indexes of valid CFs
+                print('Diverse Counterfactuals found! total time taken: %02d' %
+                    m, 'min %02d' % s, 'sec')
+            else:
+                self.total_CFs_found = 0
+                valid_ix = []  # indexes of valid CFs
+                for cf_ix, pred in enumerate(self.cfs_preds):
+                    if self.target_cf_range[0] <= pred <= self.target_cf_range[1]:
+                        self.total_CFs_found += 1
+                        valid_ix.append(cf_ix)
+
+                if self.total_CFs_found == 0:
+                    print('No Counterfactuals found for the given configuation, perhaps try with different ',
+                        'values of proximity (or diversity) weights or learning rate...',
+                        '; total time taken: %02d' % m, 'min %02d' % s, 'sec')
+                else:
+                    print('Only %d (required %d)' % (self.total_CFs_found, max(loop_find_CFs, self.total_CFs)),
+                        ' Diverse Counterfactuals found for the given configuation, perhaps try with different',
+                        'values of proximity (or diversity) weights or learning rate...',
+                        '; total time taken: %02d' % m, 'min %02d' % s, 'sec')
 
         if final_cfs_df_sparse is not None:
             final_cfs_df_sparse = final_cfs_df_sparse.iloc[valid_ix].reset_index(drop=True)
