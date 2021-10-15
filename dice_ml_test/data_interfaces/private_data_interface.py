@@ -1,3 +1,4 @@
+""" データの前処理, 摂動可能範囲の設定 """
 """Module containing meta data information about private data."""
 
 import sys
@@ -6,7 +7,7 @@ import numpy as np
 import collections
 import logging
 
-from dice_ml.data_interfaces.base_data_interface import _BaseData
+from data_interfaces.base_data_interface import _BaseData
 
 
 logging.basicConfig(level=logging.NOTSET)
@@ -188,6 +189,7 @@ class PrivateData(_BaseData):
         if len(self.categorical_feature_names) > 0:
             # simulating sklearn's one-hot-encoding
             # continuous features on the left
+            # 連続変数とone-hot-encoding化されたカテゴリ変数のラベルのリスト
             self.ohe_encoded_feature_names = [
                 feature for feature in self.continuous_feature_names]
             for feature_name in self.categorical_feature_names:
@@ -207,6 +209,7 @@ class PrivateData(_BaseData):
         """Gets all data related params for DiCE."""
 
         self.create_ohe_params()
+        # 標準化されていれば最小値, 最大値は0.0, 1.0
         minx, maxx = self.get_minx_maxx(normalized=True)
 
         # get the column indexes of categorical and continuous features after one-hot-encoding

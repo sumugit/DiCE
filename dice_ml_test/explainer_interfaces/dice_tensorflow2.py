@@ -232,6 +232,7 @@ class DiceTensorFlow2(ExplainerBase):
             self.feature_weights_list = tf.constant([feature_weights_list], dtype=tf.float32)
 
     def update_hyperparameters(self, proximity_weight, diversity_weight, categorical_penalty):
+        """ハイパーパラメータの設定"""
         """Update hyperparameters of the loss function"""
 
         self.hyperparameters = [proximity_weight, diversity_weight, categorical_penalty]
@@ -335,7 +336,7 @@ class DiceTensorFlow2(ExplainerBase):
     def compute_diversity_loss(self):
         """dpp_diversityの定義"""
         """Computes the third part (diversity) of the loss function."""
-        # 生成CF数が1の時はそもそもdiversityを香料する必要がない
+        # 生成CF数が1の時はそもそもdiversityを考慮する必要がない
         if self.total_CFs == 1:
             return tf.constant(0.0)
 
@@ -494,9 +495,11 @@ class DiceTensorFlow2(ExplainerBase):
                         return False
                 # 回帰問題の時
                 elif self.model.model_type == ModelTypes.Regressor:
+                    # 全ての予測値が期待出力域に属していたら終了
                     if all(self.target_cf_range[0] <= i <= self.target_cf_range[1] for i in test_preds):
                         self.converged = True
                         return True
+                    # 一つでも期待クラスに属していないCFがあれば失敗
                     else:
                         return False
                     
@@ -528,7 +531,6 @@ class DiceTensorFlow2(ExplainerBase):
                 raise ValueError("Invalid Range!")
             self.target_cf_range = desired_range
         # 期待クラスの設定
-        print(self.model.model_type)
         if desired_class == "opposite" and self.model.model_type == ModelTypes.Classifier: #--added.
             desired_class = 1.0 - round(test_pred) # roundで確率を0,1に変換
             self.target_cf_class = np.array([[desired_class]], dtype=np.float32)

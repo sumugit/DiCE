@@ -1,7 +1,7 @@
 """ tensorflowモデルを呼び出した時に実行させる (2.系のみ実行可能) """
 """Module containing an interface to trained Keras Tensorflow model."""
 
-from dice_ml.model_interfaces.base_model import BaseModel
+from model_interfaces.base_model import BaseModel
 import tensorflow as tf
 from tensorflow import keras
 

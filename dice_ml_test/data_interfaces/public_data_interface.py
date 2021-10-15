@@ -8,8 +8,8 @@ import numpy as np
 import logging
 from collections import defaultdict
 
-from dice_ml.data_interfaces.base_data_interface import _BaseData
-from dice_ml.utils.exception import SystemException, UserConfigValidationException
+from data_interfaces.base_data_interface import _BaseData
+from utils.exception import SystemException, UserConfigValidationException
 
 
 class PublicData(_BaseData):
@@ -32,9 +32,11 @@ class PublicData(_BaseData):
         self._validate_and_set_dataframe(params=params)
         self._validate_and_set_continuous_features(params=params)
 
+        # 説明変数のラベル
         self.feature_names = [
             name for name in self.data_df.columns.tolist() if name != self.outcome_name]
 
+        # 説明変数の個数
         self.number_of_features = len(self.feature_names)
 
         if len(set(self.continuous_feature_names) - set(self.feature_names)) != 0:
@@ -94,6 +96,7 @@ class PublicData(_BaseData):
 
     def _validate_and_set_dataframe(self, params):
         """Validate and set the dataframe."""
+        """訓練データをdata_dfにコピー"""
         if 'dataframe' not in params:
             raise ValueError("dataframe not found in params")
 

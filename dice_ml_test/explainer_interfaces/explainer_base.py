@@ -10,9 +10,9 @@ from tqdm import tqdm
 
 from collections.abc import Iterable
 from sklearn.neighbors import KDTree
-from dice_ml.counterfactual_explanations import CounterfactualExplanations
-from dice_ml.utils.exception import UserConfigValidationException
-from dice_ml.constants import ModelTypes
+from counterfactual_explanations import CounterfactualExplanations
+from utils.exception import UserConfigValidationException
+from constants import ModelTypes
 
 
 class ExplainerBase(ABC):
@@ -643,19 +643,24 @@ class ExplainerBase(ABC):
         return 1 / (1 + np.exp(-z))
 
     def build_KD_tree(self, data_df_copy, desired_range, desired_class, predicted_outcome_name):
+        """訓練データからkd-tree作成"""
         # Stores the predictions on the training data
+        # dataset_instanceは目的変数を除いた訓練データ全て
         dataset_instance = self.data_interface.prepare_query_instance(
             query_instance=data_df_copy[self.data_interface.feature_names])
-
+        
+        # 訓練データに対する予測値
         predictions = self.model.model.predict(dataset_instance)
         # TODO: Is it okay to insert a column in the original dataframe with the predicted outcome? This is memory-efficient
         data_df_copy[predicted_outcome_name] = predictions
 
         # segmenting the dataset according to outcome
         dataset_with_predictions = None
+        # 分類問題の時
         if self.model.model_type == ModelTypes.Classifier:
             dataset_with_predictions = data_df_copy.loc[[i == desired_class for i in predictions]].copy()
 
+        # 回帰問題の時
         elif self.model.model_type == ModelTypes.Regressor:
             # 期待出力域に収まるデータのみを抽出 (クラスj≠t_0となるx_j,.のデータを抜き出す)
             dataset_with_predictions = data_df_copy.loc[
@@ -666,6 +671,7 @@ class ExplainerBase(ABC):
         if len(dataset_with_predictions) > 0:
             # 期待出力域に収まるデータをOne-hot-encoding
             dummies = pd.get_dummies(dataset_with_predictions[self.data_interface.feature_names])
+            # kd-tree作成
             KD_tree = KDTree(dummies)
 
         return dataset_with_predictions, KD_tree, predictions # 期待出力域に収まるデータ, KD_tree, データセットの予測値

@@ -5,9 +5,9 @@
 
 import pickle
 import numpy as np
-from dice_ml.utils.helpers import DataTransfomer
-from dice_ml.constants import ModelTypes
-from dice_ml.utils.exception import SystemException
+from utils.helpers import DataTransfomer
+from constants import ModelTypes
+from utils.exception import SystemException
 
 
 class BaseModel:
@@ -42,6 +42,7 @@ class BaseModel:
                 self.model = pickle.load(filehandle)
 
     def get_output(self, input_instance, model_score=True):
+        """MLモデルの予測値 (分類問題なら確率, 回帰問題なら数値)"""
         """returns prediction probabilities for a classifier and the predicted output for a regressor.
 
         :returns: an array of output scores for a classifier, and a singleton

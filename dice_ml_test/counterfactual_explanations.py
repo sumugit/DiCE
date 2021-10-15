@@ -3,10 +3,10 @@ import json
 import jsonschema
 import os
 
-from dice_ml.diverse_counterfactuals import CounterfactualExamples
-from dice_ml.utils.exception import UserConfigValidationException
-from dice_ml.diverse_counterfactuals import _DiverseCFV2SchemaConstants
-from dice_ml.constants import _SchemaVersions
+from diverse_counterfactuals import CounterfactualExamples
+from utils.exception import UserConfigValidationException
+from diverse_counterfactuals import _DiverseCFV2SchemaConstants
+from constants import _SchemaVersions
 
 
 class _CommonSchemaConstants:
