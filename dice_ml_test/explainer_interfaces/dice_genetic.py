@@ -267,7 +267,7 @@ class DiceGenetic(ExplainerBase):
                                   diversity_loss_type="dpp_style:inverse_dist", feature_weights="inverse_mad",
                                   stopping_threshold=0.5, posthoc_sparsity_param=0.1,
                                   posthoc_sparsity_algorithm="binary",
-                                  maxiterations=500, thresh=1e-2, verbose=False):
+                                  maxiterations=500, thresh=1e-2, verbose=False, is_research=False):
         """Generates diverse counterfactual explanations
 
         :param query_instance: A dictionary of feature names and values. Test point of interest.
@@ -341,7 +341,7 @@ class DiceGenetic(ExplainerBase):
 
         # CF生成
         query_instance_df = self.find_counterfactuals(query_instance, desired_range, desired_class, features_to_vary,
-                                                      maxiterations, thresh, verbose)
+                                                      maxiterations, thresh, verbose, is_research)
 
         return exp.CounterfactualExamples(data_interface=self.data_interface,
                                           test_instance_df=query_instance_df,
@@ -385,32 +385,38 @@ class DiceGenetic(ExplainerBase):
 
         return predicted_values
 
-    def compute_yloss(self, cfs, desired_range, desired_class):
+    def compute_yloss(self, cfs, desired_range, desired_class, is_research):
         """期待出力となるような損失関数"""
         """Computes the first part (y-loss) of the loss function."""
-        # ylossの設定
-        yloss = 0.0
-        # 分類問題の場合
-        if self.model.model_type == ModelTypes.Classifier:
-            predicted_value = np.array(self.predict_fn_scores(cfs))
-            if self.yloss_type == 'hinge_loss':
-                maxvalue = np.full((len(predicted_value)), -np.inf)
-                for c in range(self.num_output_nodes):
-                    if c != desired_class:
-                        maxvalue = np.maximum(maxvalue, predicted_value[:, c])
-                yloss = np.maximum(0, maxvalue - predicted_value[:, int(desired_class)])
-            return yloss
-
-        # 回帰問題の場合   
-        elif self.model.model_type == ModelTypes.Regressor:
+        # 単純な誤差 --added.
+        if is_research:
             predicted_value = self.predict_fn(cfs)
-            if self.yloss_type == 'hinge_loss':
-                yloss = np.zeros(len(predicted_value))
-                for i in range(len(predicted_value)):
-                    if not desired_range[0] <= predicted_value[i] <= desired_range[1]:
-                        yloss[i] = max(abs(predicted_value[i] - desired_range[0]),
-                                       abs(predicted_value[i] - desired_range[1]))
-            return yloss
+            yloss = np.zeros(len(predicted_value))
+            for i in range(len(predicted_value)):
+                yloss[i] = self.test_pred - predicted_value[i]
+        else:
+            # ylossの設定
+            yloss = 0.0
+            # 分類問題の場合
+            if self.model.model_type == ModelTypes.Classifier:
+                predicted_value = np.array(self.predict_fn_scores(cfs))
+                if self.yloss_type == 'hinge_loss':
+                    maxvalue = np.full((len(predicted_value)), -np.inf)
+                    for c in range(self.num_output_nodes):
+                        if c != desired_class:
+                            maxvalue = np.maximum(maxvalue, predicted_value[:, c])
+                    yloss = np.maximum(0, maxvalue - predicted_value[:, int(desired_class)])
+
+            # 回帰問題の場合   
+            elif self.model.model_type == ModelTypes.Regressor:
+                predicted_value = self.predict_fn(cfs)
+                if self.yloss_type == 'hinge_loss':
+                    yloss = np.zeros(len(predicted_value))
+                    for i in range(len(predicted_value)):
+                        if not desired_range[0] <= predicted_value[i] <= desired_range[1]:
+                            yloss[i] = min(abs(predicted_value[i] - desired_range[0]),
+                                        abs(predicted_value[i] - desired_range[1]))
+        return yloss
 
     def compute_proximity_loss(self, x_hat_unnormalized, query_instance_normalized):
         """２つの連続変数のベクトル間距離を表す損失関数"""
@@ -419,7 +425,7 @@ class DiceGenetic(ExplainerBase):
         x_hat = self.data_interface.normalize_data(x_hat_unnormalized)
         feature_weights = np.array(
             [self.feature_weights_list[0][i] for i in self.data_interface.continuous_feature_indexes])
-        # query_instance と cf の標準化絶対距離に特徴量の重みを掛けて足す
+        # query_instance と cf の標準化l1_ノルムに特徴量の重みを掛けて足す
         product = np.multiply(
             (abs(x_hat - query_instance_normalized)[:, [self.data_interface.continuous_feature_indexes]]),
             feature_weights)
@@ -437,10 +443,10 @@ class DiceGenetic(ExplainerBase):
         return sparsity_loss / len(
             self.data_interface.feature_names)  # Dividing by the number of features to normalize sparsity loss
 
-    def compute_loss(self, cfs, desired_range, desired_class):
+    def compute_loss(self, cfs, desired_range, desired_class, is_research):
         """全体の損失関数"""
         """Computes the overall loss"""
-        self.yloss = self.compute_yloss(cfs, desired_range, desired_class)
+        self.yloss = self.compute_yloss(cfs, desired_range, desired_class, is_research)
         self.proximity_loss = self.compute_proximity_loss(cfs, self.query_instance_normalized) \
             if self.proximity_weight > 0 else 0.0
         self.sparsity_loss = self.compute_sparsity_loss(cfs) if self.sparsity_weight > 0 else 0.0
@@ -490,7 +496,7 @@ class DiceGenetic(ExplainerBase):
         return one_init
 
     def find_counterfactuals(self, query_instance, desired_range, desired_class,
-                             features_to_vary, maxiterations, thresh, verbose):
+                             features_to_vary, maxiterations, thresh, verbose, is_research):
         """遺伝的アルゴリズムによってCFを生成する"""
         """Finds counterfactuals by generating cfs through the genetic algorithm"""
         population = self.cfs.copy()
@@ -505,29 +511,32 @@ class DiceGenetic(ExplainerBase):
         self.query_instance_normalized = self.query_instance_normalized.astype('float')
 
         self.average_loss_list = []
+        self.average_top_loss_list = []
 
         # maxiterationの数だけ以下を繰り返す
         while iterations < maxiterations and self.total_CFs > 0:
             # 全ての中間CFが期待出力となっていて且つlossの絶対差が一定の閾値を下回れば
-            if abs(previous_best_loss - current_best_loss) <= thresh and \
-                    (self.model.model_type == ModelTypes.Classifier and all(i == desired_class for i in cfs_preds) or
-                     (self.model.model_type == ModelTypes.Regressor and
-                      all(desired_range[0] <= i <= desired_range[1] for i in cfs_preds))):
-                stop_cnt += 1
-            # そうでなければ
-            else:
-                stop_cnt = 0
-            # 5step連続で全ての中間CFが期待出力となれば終了
-            if stop_cnt >= 5:
-                break
+            """             if abs(previous_best_loss - current_best_loss) <= thresh and \
+                                (self.model.model_type == ModelTypes.Classifier and all(i == desired_class for i in cfs_preds) or
+                                (self.model.model_type == ModelTypes.Regressor and
+                                all(desired_range[0] <= i <= desired_range[1] for i in cfs_preds))):
+                            stop_cnt += 1
+                        # そうでなければ
+                        else:
+                            stop_cnt = 0
+                        # 5step連続で全ての中間CFが期待出力となれば終了
+                        if stop_cnt >= 5:
+                            print("stop_cntで停止.")
+                            break
+            """            
             previous_best_loss = current_best_loss
             population = np.unique(tuple(map(tuple, population)), axis=0)
 
             # 損失値の計算
-            population_fitness = self.compute_loss(population, desired_range, desired_class)
+            population_fitness = self.compute_loss(population, desired_range, desired_class, is_research)
             population_fitness = population_fitness[population_fitness[:, 1].argsort()]
             #print("世代", iterations, "loss", np.average(population_fitness))
-            self.average_loss_list.append(np.average(population_fitness))
+            self.average_loss_list.append(np.average([val[1] for val in population_fitness]))
 
             current_best_loss = population_fitness[0][1]
             # CF生成数分lossを保存
@@ -542,7 +551,10 @@ class DiceGenetic(ExplainerBase):
                     cfs_preds = self.predict_fn(to_pred)
 
             # self.total_CFS of the next generation obtained from the fittest members of current generation
+            # 選択
             top_members = self.total_CFs
+            # 上位の平均lossを保存
+            self.average_top_loss_list.append(np.average([val[1] for val in population_fitness[:top_members]]))
             # lossのスコア上位total_CFs分だけ次の世代に受け継がれる
             new_generation_1 = np.array([population[int(tup[0])] for tup in population_fitness[:top_members]])
 
@@ -571,19 +583,27 @@ class DiceGenetic(ExplainerBase):
         self.cfs_preds = []
         self.final_cfs = []
         i = 0
-        while i < self.total_CFs:
-            predictions = self.predict_fn_scores(population[i])[0]
-            # 期待出力になれば合格
-            if self.is_cf_valid(predictions):
+        # 期待出力に収まったかどうかは気にしない -- added.
+        if is_research:
+            while i < self.total_CFs:
+                predictions =  self.predict_fn_scores(population[i])[0]
                 self.final_cfs.append(population[i])
-                # 分類問題の時
-                if not isinstance(predictions, float) and len(predictions) > 1:
-                    self.cfs_preds.append(np.argmax(predictions))
-                # 回帰問題の時
-                else:
-                    self.cfs_preds.append(predictions)
-            i += 1
-
+                self.cfs_preds.append(predictions)
+                i += 1
+        else:
+            while i < self.total_CFs:
+                predictions = self.predict_fn_scores(population[i])[0]
+                # 期待出力になれば合格
+                if self.is_cf_valid(predictions):
+                    self.final_cfs.append(population[i])
+                    # 分類問題の時
+                    if not isinstance(predictions, float) and len(predictions) > 1:
+                        self.cfs_preds.append(np.argmax(predictions))
+                    # 回帰問題の時
+                    else:
+                        self.cfs_preds.append(predictions)
+                i += 1
+ 
         # converting to dataframe
         query_instance_df = self.label_decode(query_instance)
         query_instance_df[self.data_interface.outcome_name] = self.test_pred
@@ -600,14 +620,18 @@ class DiceGenetic(ExplainerBase):
         m, s = divmod(self.elapsed, 60)
 
         if verbose:
-            if len(self.final_cfs) == self.total_CFs:
+            if is_research:
                 print('Diverse Counterfactuals found! total time taken: %02d' %
                       m, 'min %02d' % s, 'sec')
             else:
-                print('Only %d (required %d) ' % (len(self.final_cfs), self.total_CFs),
-                      'Diverse Counterfactuals found for the given configuation, perhaps ',
-                      'change the query instance or the features to vary...'  '; total time taken: %02d' % m,
-                      'min %02d' % s, 'sec')
+                if len(self.final_cfs) == self.total_CFs:
+                    print('Diverse Counterfactuals found! total time taken: %02d' %
+                        m, 'min %02d' % s, 'sec')
+                else:
+                    print('Only %d (required %d) ' % (len(self.final_cfs), self.total_CFs),
+                        'Diverse Counterfactuals found for the given configuation, perhaps ',
+                        'change the query instance or the features to vary...'  '; total time taken: %02d' % m,
+                        'min %02d' % s, 'sec')
 
         return query_instance_df
 

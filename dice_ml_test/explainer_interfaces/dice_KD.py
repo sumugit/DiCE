@@ -133,12 +133,16 @@ class DiceKD(ExplainerBase):
         return self.model.get_output(input_instance, model_score=False)
 
     def do_sparsity_check(self, cfs, query_instance, sparsity_weight):
+        """テスト入力データとの近接と摂動した変数の数をもとに中間CFをスコアリング"""
         cfs = cfs.assign(sparsity=np.nan, distancesparsity=np.nan)
         for index, row in cfs.iterrows():
             cnt = 0
+            # 連続変数
             for column in self.data_interface.continuous_feature_names:
+                # 浮動小数点に起因する誤差を許して値を比較
                 if not np.isclose(row[column], query_instance[column].values[0]):
                     cnt += 1
+            # カテゴリ変数
             for column in self.data_interface.categorical_feature_names:
                 if row[column] != query_instance[column].values[0]:
                     cnt += 1
@@ -153,9 +157,9 @@ class DiceKD(ExplainerBase):
 
         return cfs
 
-    # kd-tree から cf 生成
     def vary_valid(self, KD_query_instance, total_CFs, features_to_vary, permitted_range, query_instance,
                    sparsity_weight):
+        """kd-treeからCF生成"""
         """This function ensures that we only vary features_to_vary when generating counterfactuals"""
 
         # TODO: this should be a user-specified parameter
@@ -172,9 +176,12 @@ class DiceKD(ExplainerBase):
             distances = KD_tree_output[0][0]
             indices = KD_tree_output[1][0]
 
+            # 中間CF生成
             cfs = self.dataset_with_predictions.iloc[indices].copy()
             cfs['distance'] = distances
+            # 中間CFのスコアリング
             cfs = self.do_sparsity_check(cfs, query_instance, sparsity_weight)
+            # 目的変数を除く
             cfs = cfs.drop(self.data_interface.outcome_name, axis=1)
 
         self.final_cfs = pd.DataFrame()
@@ -184,6 +191,7 @@ class DiceKD(ExplainerBase):
 
         # Iterating through the closest points from the KD tree and checking if any of these are valid
         if self.KD_tree is not None and total_CFs > 0:
+            # 中間CFはスコアリングでソートしたのでindex貼り直す
             cfs = cfs.reset_index(drop=True)
             for i in range(len(cfs)):
                 # 見つかったcfの数がtotal_CFsと一致したら終了
@@ -208,6 +216,7 @@ class DiceKD(ExplainerBase):
                 # 上のフィルターに引っかからなかったら
                 if valid_cf_found:
                     # cfsと同じサンプルが既にfinal_idicesに含まれていなければ
+                    # (この処理により実際に条件を満たす訓練データよりも少ないCF数が得られることがある)
                     if not self.duplicates(cfs, final_indices.copy(), i):
                         total_cfs_found += 1
                         final_indices.append(i)
@@ -234,6 +243,7 @@ class DiceKD(ExplainerBase):
                              total_CFs, features_to_vary, permitted_range,
                              sparsity_weight, stopping_threshold, posthoc_sparsity_param, posthoc_sparsity_algorithm,
                              verbose):
+        """CFの生成"""
         """Finds counterfactuals by querying a K-D tree for the nearest data points in the desired class from the dataset."""
 
         start_time = timeit.default_timer()
