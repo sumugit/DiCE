@@ -1,4 +1,4 @@
-"""入力データの整形および前処理のmoduleが定義されたClass. 変更する必要無し."""
+"""入力データの整形および前処理のmoduleが定義されたClass"""
 
 """Module containing all required information about the interface between raw (or transformed)
 public data and DiCE explainers."""
