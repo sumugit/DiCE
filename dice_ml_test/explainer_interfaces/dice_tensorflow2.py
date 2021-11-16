@@ -251,7 +251,7 @@ class DiceTensorFlow2(ExplainerBase):
         elif opt_method == "rmsprop":
             self.optimizer = tf.compat.v1.train.RMSPropOptimizer(learning_rate=learning_rate)
 
-    def compute_yloss(self, desired_range, desired_class):
+    def compute_yloss(self, desired_range, test_pred):
         """ylossの定義"""
         """Computes the first part (y-loss) of the loss function."""
         yloss = 0.0
@@ -279,14 +279,19 @@ class DiceTensorFlow2(ExplainerBase):
                 yloss += temp_loss
         # 回帰問題
         elif self.model.model_type == ModelTypes.Regressor:
-            for i in range(self.total_CFs):
-                if self.yloss_type == "hinge_loss":
+            if self.yloss_type == "hinge_loss":
+                for i in range(self.total_CFs):
                     temp_loss = 0.0
                     # 期待出力域に収まっていなければ罰則
                     if not desired_range[0] <= self.model.get_output(self.cfs[i]) <= desired_range[1]:
                         temp_loss = max(abs(self.model.get_output(self.cfs[i]) - desired_range[0]),
-                                       abs(self.model.get_output(self.cfs[i]) - desired_range[1]))
-                yloss += temp_loss            
+                                    abs(self.model.get_output(self.cfs[i]) - desired_range[1]))
+                    yloss += temp_loss  
+            elif self.yloss_type == "difference_loss":
+                for i in range(self.total_CFs):
+                    # 入力データとCF予測値の差分
+                    temp_loss = test_pred - self.model.get_output(self.cfs[i])
+                    yloss += temp_loss                          
 
         return yloss/self.total_CFs
 
@@ -329,7 +334,7 @@ class DiceTensorFlow2(ExplainerBase):
 
         # 行列の形に変換
         det_entries = tf.reshape(det_entries, [self.total_CFs, self.total_CFs])
-        # 行列式を計算
+        # 行列式det(K)を計算
         diversity_loss = tf.compat.v1.matrix_determinant(det_entries)
         return diversity_loss
 
@@ -372,10 +377,10 @@ class DiceTensorFlow2(ExplainerBase):
 
         return regularization_loss
 
-    def compute_loss(self, desired_range, desired_class):
+    def compute_loss(self, desired_range, test_pred):
         """全体の最適化問題"""
         """Computes the overall loss"""
-        self.yloss = self.compute_yloss(desired_range, desired_class)
+        self.yloss = self.compute_yloss(desired_range, test_pred) # 分類問題か回帰問題かはmodel_typeで決まる
         self.proximity_loss = self.compute_proximity_loss() if self.proximity_weight > 0 else 0.0
         self.diversity_loss = self.compute_diversity_loss() if self.diversity_weight > 0 else 0.0
         self.regularization_loss = self.compute_regularization_loss()
@@ -524,6 +529,7 @@ class DiceTensorFlow2(ExplainerBase):
         self.x1 = tf.constant(query_instance, dtype=tf.float32)
 
         # find the predicted value of query_instance
+        # 入力データの予測値
         test_pred = self.predict_fn(tf.constant(query_instance, dtype=tf.float32))[0][0]
         # 期待出力域の設定 -- added.
         if desired_range is not None:
@@ -590,10 +596,11 @@ class DiceTensorFlow2(ExplainerBase):
             while self.stop_loop(iterations, loss_diff) is False:
 
                 # compute loss and tape the variables history
-                # tf.GradientTapeクラスをインスタンス化することで傾き (勾配) を求められる
+                # tf.GradientTapeクラスをインスタンス化することで
+                # lossの計算過程 (計算グラフの構築など) を記録し, 自動微分
                 with tf.GradientTape() as tape:
                     # 全体の損失を計算
-                    loss_value = self.compute_loss(desired_range, desired_class)
+                    loss_value = self.compute_loss(desired_range, test_pred)
 
                 # get gradients
                 # 各特徴量の傾き (勾配) の取得
